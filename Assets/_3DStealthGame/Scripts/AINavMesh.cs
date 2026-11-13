@@ -1,7 +1,6 @@
 using UnityEngine;
 using UnityEngine.AI;
 using System.Collections.Generic;
-using System.Linq; // Essencial para a lógica de ordenação e aleatoriedade
 
 public class AINavMesh : MonoBehaviour
 {
@@ -26,6 +25,7 @@ public class AINavMesh : MonoBehaviour
     private bool probabilisticMode = false;
     private List<Vector3> currentHeatmapPatrolRoute; // O "plano de patrulha" atual
     private int patrolRouteIndex = 0; // Qual ponto do plano estamos seguindo
+    private const int PatrolRouteSize = 5; // K: quantidade de pontos quentes por plano
 
     void Start()
     {
@@ -111,15 +111,68 @@ public class AINavMesh : MonoBehaviour
             return;
         }
 
-        // Pega os 5 pontos mais quentes e os embaralha para criar uma rota imprevisível
-        currentHeatmapPatrolRoute = heatmap.OrderByDescending(spot => spot.Value)
-                                           .Take(5)
-                                           .Select(spot => spot.Key)
-                                           .OrderBy(x => Random.value) // Embaralha a ordem!
-                                           .ToList();
+        // Seleciona os K pontos mais quentes via Min-Heap de capacidade fixa: Theta(V log K) tempo, O(K) espaço
+        // (substitui OrderByDescending + Take(K), que custava Theta(V log V) e alocava buffers de ordenação).
+        currentHeatmapPatrolRoute = SelectTopHotSpots(heatmap, PatrolRouteSize);
+
+        // Embaralha a ordem (Fisher-Yates, O(K)) para criar uma rota imprevisível
+        for (int i = currentHeatmapPatrolRoute.Count - 1; i > 0; i--)
+        {
+            int j = Random.Range(0, i + 1);
+            Vector3 tmp = currentHeatmapPatrolRoute[i];
+            currentHeatmapPatrolRoute[i] = currentHeatmapPatrolRoute[j];
+            currentHeatmapPatrolRoute[j] = tmp;
+        }
         
         patrolRouteIndex = 0; // Reseta o índice para começar do início do novo plano
         Debug.Log("Novo plano de patrulha gerado com " + currentHeatmapPatrolRoute.Count + " pontos.");
+    }
+
+    // Top-K por contagem usando Min-Heap binário de tamanho fixo (raiz = menor contagem entre os K candidatos).
+    static List<Vector3> SelectTopHotSpots(Dictionary<Vector3, int> source, int k)
+    {
+        int capacity = Mathf.Min(k, source.Count);
+        Vector3[] keys = new Vector3[capacity];
+        int[] counts = new int[capacity];
+        int size = 0;
+
+        foreach (KeyValuePair<Vector3, int> spot in source)
+        {
+            if (size < capacity)
+            {
+                // Insere no fim e sobe (sift-up): O(log K)
+                int i = size++;
+                while (i > 0)
+                {
+                    int parent = (i - 1) / 2;
+                    if (counts[parent] <= spot.Value) break;
+                    keys[i] = keys[parent];
+                    counts[i] = counts[parent];
+                    i = parent;
+                }
+                keys[i] = spot.Key;
+                counts[i] = spot.Value;
+            }
+            else if (spot.Value > counts[0])
+            {
+                // Substitui a raiz (menor dos K) e desce (sift-down): O(log K)
+                int i = 0;
+                while (true)
+                {
+                    int child = 2 * i + 1;
+                    if (child >= size) break;
+                    if (child + 1 < size && counts[child + 1] < counts[child]) child++;
+                    if (counts[child] >= spot.Value) break;
+                    keys[i] = keys[child];
+                    counts[i] = counts[child];
+                    i = child;
+                }
+                keys[i] = spot.Key;
+                counts[i] = spot.Value;
+            }
+        }
+
+        return new List<Vector3>(keys);
     }
 
     // --- NOVA FUNÇÃO PARA SEGUIR O PLANO ---
